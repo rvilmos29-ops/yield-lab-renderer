@@ -189,23 +189,18 @@ def render_ffmpeg(video_path, audio_path, srt_path, output_path, duration, orien
         "FontName=Arial,FontSize=18,PrimaryColour=&H00FFFFFF,"
         "OutlineColour=&H00000000,Outline=2,Alignment=2,MarginV=60"
     )
-    filter_complex = (
-        f"[0:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
-        f"crop={width}:{height},setsar=1[vout]"
-    )
     cmd = [
         "ffmpeg", "-y",
         "-stream_loop", "-1",
         "-i", str(video_path),
         "-i", str(audio_path),
-        "-filter_complex", filter_complex,
-        "-map", "[vout]",
-        "-map", "1:a",
+        "-vf", f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1",
         "-c:v", "libx264",
         "-preset", "fast",
         "-crf", "23",
         "-c:a", "aac",
         "-b:a", "192k",
+        "-shortest",
         "-t", str(duration),
         "-movflags", "+faststart",
         str(output_path)
