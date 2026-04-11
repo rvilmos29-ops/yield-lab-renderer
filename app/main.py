@@ -31,8 +31,8 @@ class RenderRequest(BaseModel):
 class JobStatus(BaseModel):
     job_id: str
     status: str
-    video_url: str = None
-    error: str = None
+    video_url: str = ""
+    error: str = ""
 
 @app.get("/health")
 def health():
