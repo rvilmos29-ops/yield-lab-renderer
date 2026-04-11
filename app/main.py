@@ -189,11 +189,9 @@ def render_ffmpeg(video_path, audio_path, srt_path, output_path, duration, orien
         "FontName=Arial,FontSize=18,PrimaryColour=&H00FFFFFF,"
         "OutlineColour=&H00000000,Outline=2,Alignment=2,MarginV=60"
     )
-    srt_escaped = str(srt_path).replace("\\", "/").replace(":", "\\:")
     filter_complex = (
         f"[0:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
-        f"crop={width}:{height},setsar=1[v];"
-        f"[v]subtitles='{srt_escaped}':force_style='{subtitle_style}'[vout]"
+        f"crop={width}:{height},setsar=1[vout]"
     )
     cmd = [
         "ffmpeg", "-y",
