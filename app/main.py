@@ -171,14 +171,29 @@ def render_ffmpeg(video_path, audio_path, srt_path, output_path, duration, orien
         width, height = 1920, 1080
     else:
         width, height = 1080, 1920
+
+    if not video_path.exists() or video_path.stat().st_size < 1000:
+        raise Exception(f"Video file missing or too small: {video_path}")
+    if not audio_path.exists() or audio_path.stat().st_size < 1000:
+        raise Exception(f"Audio file missing or too small: {audio_path}")
+
+    print(f"Video size: {video_path.stat().st_size}, Audio size: {audio_path.stat().st_size}")
+
+    probe = subprocess.run([
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", str(video_path)
+    ], capture_output=True, text=True)
+    print(f"Video probe: {probe.stdout.strip()} err: {probe.stderr[:200]}")
+
     subtitle_style = (
         "FontName=Arial,FontSize=18,PrimaryColour=&H00FFFFFF,"
         "OutlineColour=&H00000000,Outline=2,Alignment=2,MarginV=60"
     )
+    srt_escaped = str(srt_path).replace("\\", "/").replace(":", "\\:")
     filter_complex = (
         f"[0:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
         f"crop={width}:{height},setsar=1[v];"
-        f"[v]subtitles={str(srt_path)}:force_style='{subtitle_style}'[vout]"
+        f"[v]subtitles='{srt_escaped}':force_style='{subtitle_style}'[vout]"
     )
     cmd = [
         "ffmpeg", "-y",
@@ -197,6 +212,7 @@ def render_ffmpeg(video_path, audio_path, srt_path, output_path, duration, orien
         "-movflags", "+faststart",
         str(output_path)
     ]
+    print(f"Running FFmpeg...")
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     if result.returncode != 0:
-        raise Exception(f"FFmpeg error: {result.stderr[-500:]}")
+        raise Exception(f"FFmpeg error: {result.stderr[-800:]}")
