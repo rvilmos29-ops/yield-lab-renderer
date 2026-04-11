@@ -53,8 +53,8 @@ def get_status(job_id: str):
     return JobStatus(
         job_id=job_id,
         status=job["status"],
-        video_url=job.get("video_url"),
-        error=job.get("error")
+        video_url=job.get("video_url") or "",
+        error=job.get("error") or ""
     )
 
 async def process_render(job_id: str, req: RenderRequest):
