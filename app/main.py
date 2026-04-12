@@ -192,7 +192,9 @@ def render_ffmpeg(video_path, audio_path, srt_path, output_path, duration, orien
     cmd = [
         "ffmpeg", "-y",
         "-stream_loop", "-1",
+        "-t", str(duration),
         "-i", str(video_path),
+        "-t", str(duration),
         "-i", str(audio_path),
         "-vf", f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1",
         "-c:v", "libx264",
@@ -200,8 +202,6 @@ def render_ffmpeg(video_path, audio_path, srt_path, output_path, duration, orien
         "-crf", "23",
         "-c:a", "aac",
         "-b:a", "192k",
-        "-shortest",
-        "-t", str(duration),
         "-movflags", "+faststart",
         str(output_path)
     ]
