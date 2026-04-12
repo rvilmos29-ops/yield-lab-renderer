@@ -192,6 +192,8 @@ def render_ffmpeg(video_path, audio_path, srt_path, output_path, duration, orien
         "FontName=Arial,FontSize=18,PrimaryColour=&H00FFFFFF,"
         "OutlineColour=&H00000000,Outline=2,Alignment=2,MarginV=60"
     )
+    # Use 720p to reduce memory usage on Railway
+    width, height = 1280, 720
     cmd = [
         "ffmpeg", "-y",
         "-stream_loop", "-1",
@@ -202,7 +204,9 @@ def render_ffmpeg(video_path, audio_path, srt_path, output_path, duration, orien
         "-vf", f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1",
         "-c:v", "libx264",
         "-preset", "ultrafast",
-        "-crf", "28",
+        "-tune", "fastdecode",
+        "-crf", "30",
+        "-threads", "1",
         "-c:a", "aac",
         "-b:a", "128k",
         "-movflags", "frag_keyframe+empty_moov",
