@@ -59,36 +59,39 @@ def get_status(job_id: str):
 
 async def process_render(job_id: str, req: RenderRequest):
     jobs[job_id]["status"] = "processing"
+    workdir = Path(f"/tmp/render_{job_id}")
+    workdir.mkdir(parents=True, exist_ok=True)
     try:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir = Path(tmpdir)
-            print(f"[{job_id}] Downloading audio...")
-            audio_path = tmpdir / "audio.mp3"
-            await download_file(req.audio_url, audio_path)
-            duration = get_audio_duration(audio_path)
-            print(f"[{job_id}] Duration: {duration}s")
-            print(f"[{job_id}] Fetching stock footage...")
-            video_path = tmpdir / "footage.mp4"
-            await fetch_pexels_video(req.title, video_path)
-            srt_path = tmpdir / "subs.srt"
-            generate_srt(req.script, duration, srt_path)
-            print(f"[{job_id}] Rendering...")
-            output_path = tmpdir / f"output_{job_id}.mp4"
-            render_ffmpeg(video_path, audio_path, srt_path, output_path, duration, req.orientation)
-            print(f"[{job_id}] Uploading...")
-            result = cloudinary.uploader.upload(
-                str(output_path),
-                resource_type="video",
-                public_id=f"yield-lab/{job_id}",
-                folder="yield-lab"
-            )
-            jobs[job_id]["status"] = "done"
-            jobs[job_id]["video_url"] = result["secure_url"]
-            print(f"[{job_id}] Done! {result['secure_url']}")
+        print(f"[{job_id}] Downloading audio...")
+        audio_path = workdir / "audio.mp3"
+        await download_file(req.audio_url, audio_path)
+        duration = get_audio_duration(audio_path)
+        print(f"[{job_id}] Duration: {duration}s")
+        print(f"[{job_id}] Fetching stock footage...")
+        video_path = workdir / "footage.mp4"
+        await fetch_pexels_video(req.title, video_path)
+        srt_path = workdir / "subs.srt"
+        generate_srt(req.script, duration, srt_path)
+        print(f"[{job_id}] Rendering...")
+        output_path = workdir / f"output_{job_id}.mp4"
+        render_ffmpeg(video_path, audio_path, srt_path, output_path, duration, req.orientation)
+        print(f"[{job_id}] Uploading...")
+        result = cloudinary.uploader.upload(
+            str(output_path),
+            resource_type="video",
+            public_id=f"yield-lab/{job_id}",
+            folder="yield-lab"
+        )
+        jobs[job_id]["status"] = "done"
+        jobs[job_id]["video_url"] = result["secure_url"]
+        print(f"[{job_id}] Done! {result['secure_url']}")
     except Exception as e:
         print(f"[{job_id}] Error: {e}")
         jobs[job_id]["status"] = "error"
         jobs[job_id]["error"] = str(e)
+    finally:
+        import shutil
+        shutil.rmtree(workdir, ignore_errors=True)
 
 async def download_file(url: str, dest: Path):
     async with httpx.AsyncClient(timeout=120) as client:
