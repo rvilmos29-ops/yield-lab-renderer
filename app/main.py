@@ -109,36 +109,103 @@ def get_audio_duration(audio_path: Path) -> float:
     return float(result.stdout.strip())
 
 async def fetch_pexels_video(query: str, dest: Path):
-    keywords = query.lower().replace("-", " ").split()[:3]
-    search_query = " ".join(keywords) if keywords else "technology business"
-    fallback_queries = [search_query, "technology business", "laptop office", "finance money"]
-    video_url = None
-    async with httpx.AsyncClient(timeout=30) as client:
-        for q in fallback_queries:
+    """Fetch multiple short clips and concatenate them"""
+    search_queries = [
+        "artificial intelligence technology",
+        "finance money business",
+        "laptop computer coding",
+        "city skyline timelapse",
+        "stock market data",
+        "entrepreneur working",
+        "smartphone app technology",
+        "office business meeting",
+        "data visualization screen",
+        "startup innovation",
+    ]
+
+    all_clips = []
+    async with httpx.AsyncClient(timeout=60) as client:
+        for q in search_queries:
             try:
                 r = await client.get(
                     "https://api.pexels.com/videos/search",
                     headers={"Authorization": PEXELS_API_KEY},
-                    params={"query": q, "per_page": 5, "orientation": "landscape", "size": "large"}
+                    params={"query": q, "per_page": 5, "orientation": "landscape", "size": "medium"}
                 )
                 data = r.json()
                 videos = data.get("videos", [])
-                for video in videos:
+                for video in videos[:3]:
                     files = sorted(video.get("video_files", []), key=lambda x: x.get("width", 0), reverse=True)
                     for f in files:
                         if f.get("width", 0) >= 1280:
-                            video_url = f["link"]
+                            all_clips.append(f["link"])
                             break
-                    if video_url:
-                        break
-                if video_url:
-                    break
             except Exception as e:
                 print(f"Pexels '{q}' failed: {e}")
                 continue
-    if not video_url:
+
+    if not all_clips:
         raise Exception("Could not find stock footage")
-    await download_file(video_url, dest)
+
+    print(f"Found {len(all_clips)} clips, downloading...")
+
+    # Download all clips
+    clip_paths = []
+    clip_dir = dest.parent / "clips"
+    clip_dir.mkdir(exist_ok=True)
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        for i, url in enumerate(all_clips[:50]):
+            try:
+                clip_path = clip_dir / f"clip_{i:03d}.mp4"
+                r = await client.get(url, timeout=30)
+                if r.status_code == 200:
+                    clip_path.write_bytes(r.content)
+                    clip_paths.append(clip_path)
+                    print(f"Downloaded clip {i+1}/{min(len(all_clips), 50)}")
+            except Exception as e:
+                print(f"Clip {i} download failed: {e}")
+                continue
+
+    if not clip_paths:
+        raise Exception("No clips downloaded")
+
+    print(f"Downloaded {len(clip_paths)} clips, concatenating...")
+
+    # Create concat list file
+    concat_file = dest.parent / "concat.txt"
+    with open(concat_file, "w") as f:
+        for cp in clip_paths:
+            f.write(f"file '{cp}'
+")
+
+    # Concatenate all clips into one file
+    result = subprocess.run([
+        "ffmpeg", "-y",
+        "-f", "concat",
+        "-safe", "0",
+        "-i", str(concat_file),
+        "-c", "copy",
+        str(dest)
+    ], capture_output=True, text=True, timeout=300)
+
+    if result.returncode != 0:
+        # Try with re-encode if copy fails
+        result = subprocess.run([
+            "ffmpeg", "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", str(concat_file),
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "30",
+            str(dest)
+        ], capture_output=True, text=True, timeout=300)
+
+    if result.returncode != 0:
+        raise Exception(f"Concat error: {result.stderr[-500:]}")
+
+    print(f"Concatenated footage size: {dest.stat().st_size}")
 
 def generate_srt(script: str, duration: float, srt_path: Path):
     import re
