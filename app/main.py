@@ -201,14 +201,22 @@ def render_ffmpeg(video_path, audio_path, srt_path, output_path, duration, orien
         "-i", str(audio_path),
         "-vf", f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1",
         "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "23",
+        "-preset", "ultrafast",
+        "-crf", "28",
         "-c:a", "aac",
-        "-b:a", "192k",
-        "-movflags", "+faststart",
+        "-b:a", "128k",
+        "-movflags", "frag_keyframe+empty_moov",
+        "-f", "mp4",
         str(output_path)
     ]
-    print(f"Running FFmpeg...")
+    print(f"Running FFmpeg to: {output_path}")
+    print(f"Output dir exists: {output_path.parent.exists()}, writable: {os.access(output_path.parent, os.W_OK)}")
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    print(f"FFmpeg returncode: {result.returncode}")
+    print(f"FFmpeg stdout: {result.stdout[-300:]}")
+    print(f"FFmpeg stderr last: {result.stderr[-300:]}")
     if result.returncode != 0:
         raise Exception(f"FFmpeg error: {result.stderr[-800:]}")
+    if not output_path.exists():
+        raise Exception(f"Output file not created at {output_path}")
+    print(f"Output file size: {output_path.stat().st_size}")
