@@ -176,8 +176,8 @@ async def fetch_pexels_video(query: str, dest: Path):
     concat_file = dest.parent / "concat.txt"
     with open(concat_file, "w") as f:
         for cp in clip_paths:
-            f.write(f"file '{cp}'
-")
+            f.write(f"file '{cp}'\n")
+
 
     # Concatenate all clips into one file
     result = subprocess.run([
