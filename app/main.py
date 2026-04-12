@@ -154,15 +154,30 @@ async def fetch_pexels_video(query: str, dest: Path):
     clip_dir = dest.parent / "clips"
     clip_dir.mkdir(exist_ok=True)
 
+    # Limit to 15 clips max, trim each to 10 seconds to keep memory low
+    clips_to_download = all_clips[:15]
     async with httpx.AsyncClient(timeout=60) as client:
-        for i, url in enumerate(all_clips[:50]):
+        for i, url in enumerate(clips_to_download):
             try:
+                raw_path = clip_dir / f"raw_{i:03d}.mp4"
                 clip_path = clip_dir / f"clip_{i:03d}.mp4"
                 r = await client.get(url, timeout=30)
                 if r.status_code == 200:
-                    clip_path.write_bytes(r.content)
-                    clip_paths.append(clip_path)
-                    print(f"Downloaded clip {i+1}/{min(len(all_clips), 50)}")
+                    raw_path.write_bytes(r.content)
+                    # Trim each clip to 10 seconds and normalize resolution
+                    trim = subprocess.run([
+                        "ffmpeg", "-y",
+                        "-i", str(raw_path),
+                        "-t", "10",
+                        "-vf", "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,setsar=1",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30",
+                        "-an",
+                        str(clip_path)
+                    ], capture_output=True, text=True, timeout=60)
+                    if trim.returncode == 0:
+                        clip_paths.append(clip_path)
+                        print(f"Downloaded clip {i+1}/{len(clips_to_download)}")
+                    raw_path.unlink(missing_ok=True)
             except Exception as e:
                 print(f"Clip {i} download failed: {e}")
                 continue
