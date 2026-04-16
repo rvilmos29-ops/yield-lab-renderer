@@ -3,6 +3,7 @@ import uuid
 import httpx
 import subprocess
 import tempfile
+import random
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
@@ -67,15 +68,22 @@ async def process_render(job_id: str, req: RenderRequest):
         await download_file(req.audio_url, audio_path)
         duration = get_audio_duration(audio_path)
         print(f"[{job_id}] Duration: {duration}s")
+
         print(f"[{job_id}] Fetching stock footage...")
         video_path = workdir / "footage.mp4"
-        await fetch_pexels_video(req.title, video_path)
+        await fetch_pexels_video(req.title, video_path, duration)
+
+        print(f"[{job_id}] Generating subtitles...")
         srt_path = workdir / "subs.srt"
+        ass_path = workdir / "subs.ass"
         generate_srt(req.script, duration, srt_path)
-        print(f"[{job_id}] Rendering...")
+        convert_srt_to_ass(srt_path, ass_path)
+
+        print(f"[{job_id}] Rendering final video...")
         output_path = workdir / f"output_{job_id}.mp4"
-        render_ffmpeg(video_path, audio_path, srt_path, output_path, duration, req.orientation)
-        print(f"[{job_id}] Uploading...")
+        render_ffmpeg(video_path, audio_path, ass_path, output_path, duration, req.orientation)
+
+        print(f"[{job_id}] Uploading to Cloudinary...")
         result = cloudinary.uploader.upload(
             str(output_path),
             resource_type="video",
@@ -86,7 +94,9 @@ async def process_render(job_id: str, req: RenderRequest):
         jobs[job_id]["video_url"] = result["secure_url"]
         print(f"[{job_id}] Done! {result['secure_url']}")
     except Exception as e:
+        import traceback
         print(f"[{job_id}] Error: {e}")
+        print(traceback.format_exc())
         jobs[job_id]["status"] = "error"
         jobs[job_id]["error"] = str(e)
     finally:
@@ -94,7 +104,7 @@ async def process_render(job_id: str, req: RenderRequest):
         shutil.rmtree(workdir, ignore_errors=True)
 
 async def download_file(url: str, dest: Path):
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
         r = await client.get(url)
         r.raise_for_status()
         dest.write_bytes(r.content)
@@ -108,20 +118,32 @@ def get_audio_duration(audio_path: Path) -> float:
     ], capture_output=True, text=True)
     return float(result.stdout.strip())
 
-async def fetch_pexels_video(query: str, dest: Path):
-    """Fetch multiple short clips and concatenate them"""
+async def fetch_pexels_video(query: str, dest: Path, total_duration: float):
+    """
+    Fetch clips from Pexels and build a dynamic edit:
+    - First 10s: clips of 2-3s (hook, high energy)
+    - 10s-60s: clips of 4-5s
+    - After 60s: clips of 6-8s
+    """
+    # Finance/money themed search queries
     search_queries = [
-        "artificial intelligence technology",
-        "finance money business",
-        "laptop computer coding",
-        "city skyline timelapse",
-        "stock market data",
-        "entrepreneur working",
-        "smartphone app technology",
-        "office business meeting",
-        "data visualization screen",
-        "startup innovation",
+        "stock market trading",
+        "money cash wealth",
+        "entrepreneur business success",
+        "city skyline financial district",
+        "laptop working from home",
+        "luxury lifestyle",
+        "investment portfolio",
+        "startup office team",
+        "data analytics dashboard",
+        "real estate property",
+        "cryptocurrency bitcoin",
+        "successful businessman",
+        "passive income online",
+        "financial freedom travel",
+        "banking finance",
     ]
+    random.shuffle(search_queries)
 
     all_clips = []
     async with httpx.AsyncClient(timeout=60) as client:
@@ -134,115 +156,248 @@ async def fetch_pexels_video(query: str, dest: Path):
                 )
                 data = r.json()
                 videos = data.get("videos", [])
-                for video in videos[:3]:
+                for video in videos[:2]:
                     files = sorted(video.get("video_files", []), key=lambda x: x.get("width", 0), reverse=True)
                     for f in files:
-                        if f.get("width", 0) >= 1280:
+                        if f.get("width", 0) >= 1920:
                             all_clips.append(f["link"])
                             break
+                    else:
+                        # fallback to 1280
+                        for f in files:
+                            if f.get("width", 0) >= 1280:
+                                all_clips.append(f["link"])
+                                break
             except Exception as e:
                 print(f"Pexels '{q}' failed: {e}")
                 continue
 
     if not all_clips:
-        raise Exception("Could not find stock footage")
+        raise Exception("Could not find stock footage from Pexels")
 
-    print(f"Found {len(all_clips)} clips, downloading...")
+    random.shuffle(all_clips)
+    print(f"Found {len(all_clips)} clips total")
 
-    # Download all clips
-    clip_paths = []
+    # Build clip duration schedule based on timeline position
+    # We'll generate enough clips to cover total_duration
+    clip_schedule = []
+    t = 0.0
+    idx = 0
+    while t < total_duration:
+        if t < 10:
+            clip_dur = random.uniform(2, 3)
+        elif t < 60:
+            clip_dur = random.uniform(4, 5)
+        else:
+            clip_dur = random.uniform(6, 8)
+        clip_schedule.append((idx % len(all_clips), clip_dur))
+        t += clip_dur
+        idx += 1
+
+    print(f"Need {len(clip_schedule)} clip slots for {total_duration:.1f}s video")
+
+    # Download unique clips needed
+    unique_indices = list(set(i for i, _ in clip_schedule))
     clip_dir = dest.parent / "clips"
     clip_dir.mkdir(exist_ok=True)
+    downloaded = {}
 
-    # Limit to 15 clips max, trim each to 10 seconds to keep memory low
-    clips_to_download = all_clips[:15]
     async with httpx.AsyncClient(timeout=60) as client:
-        for i, url in enumerate(clips_to_download):
+        for i in unique_indices:
+            url = all_clips[i]
+            raw_path = clip_dir / f"raw_{i:03d}.mp4"
+            clip_path = clip_dir / f"clip_{i:03d}.mp4"
             try:
-                raw_path = clip_dir / f"raw_{i:03d}.mp4"
-                clip_path = clip_dir / f"clip_{i:03d}.mp4"
-                r = await client.get(url, timeout=30)
+                r = await client.get(url, timeout=45)
                 if r.status_code == 200:
                     raw_path.write_bytes(r.content)
-                    # Trim each clip to 10 seconds and normalize resolution
+                    # Normalize to 1920x1080, no audio
                     trim = subprocess.run([
                         "ffmpeg", "-y",
                         "-i", str(raw_path),
-                        "-t", "10",
-                        "-vf", "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,setsar=1",
-                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30",
+                        "-vf", (
+                            "scale=1920:1080:force_original_aspect_ratio=increase,"
+                            "crop=1920:1080,setsar=1,fps=30"
+                        ),
+                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
                         "-an",
                         str(clip_path)
-                    ], capture_output=True, text=True, timeout=60)
-                    if trim.returncode == 0:
-                        clip_paths.append(clip_path)
-                        print(f"Downloaded clip {i+1}/{len(clips_to_download)}")
+                    ], capture_output=True, text=True, timeout=120)
                     raw_path.unlink(missing_ok=True)
+                    if trim.returncode == 0 and clip_path.exists():
+                        downloaded[i] = clip_path
+                        print(f"  Processed clip {len(downloaded)}/{len(unique_indices)}")
+                    else:
+                        print(f"  Clip {i} encode failed: {trim.stderr[-200:]}")
             except Exception as e:
-                print(f"Clip {i} download failed: {e}")
-                continue
+                print(f"  Clip {i} failed: {e}")
+                if raw_path.exists():
+                    raw_path.unlink(missing_ok=True)
 
-    if not clip_paths:
-        raise Exception("No clips downloaded")
+    if not downloaded:
+        raise Exception("No clips downloaded successfully")
 
-    print(f"Downloaded {len(clip_paths)} clips, concatenating...")
+    print(f"Downloaded {len(downloaded)} unique clips, building edit...")
 
-    # Create concat list file
+    # Build final clip list with exact durations
+    trimmed_dir = dest.parent / "trimmed"
+    trimmed_dir.mkdir(exist_ok=True)
+    concat_parts = []
+
+    for slot, (clip_idx, clip_dur) in enumerate(clip_schedule):
+        src = downloaded.get(clip_idx)
+        if src is None:
+            # fallback to any available clip
+            src = list(downloaded.values())[slot % len(downloaded)]
+
+        out = trimmed_dir / f"seg_{slot:04d}.mp4"
+
+        # Get clip duration
+        probe = subprocess.run([
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", str(src)
+        ], capture_output=True, text=True)
+        try:
+            src_dur = float(probe.stdout.strip())
+        except:
+            src_dur = 30.0
+
+        # Random start offset within clip
+        max_start = max(0, src_dur - clip_dur - 0.5)
+        start_offset = random.uniform(0, max_start) if max_start > 0 else 0
+
+        trim = subprocess.run([
+            "ffmpeg", "-y",
+            "-ss", str(start_offset),
+            "-i", str(src),
+            "-t", str(clip_dur),
+            "-c", "copy",
+            str(out)
+        ], capture_output=True, text=True, timeout=30)
+
+        if trim.returncode == 0 and out.exists() and out.stat().st_size > 1000:
+            concat_parts.append(out)
+
+    if not concat_parts:
+        raise Exception("No trimmed segments created")
+
+    print(f"Built {len(concat_parts)} segments, concatenating...")
+
     concat_file = dest.parent / "concat.txt"
     with open(concat_file, "w") as f:
-        for cp in clip_paths:
+        for cp in concat_parts:
             f.write(f"file '{cp}'\n")
 
-
-    # Concatenate all clips into one file
     result = subprocess.run([
         "ffmpeg", "-y",
-        "-f", "concat",
-        "-safe", "0",
+        "-f", "concat", "-safe", "0",
         "-i", str(concat_file),
-        "-c", "copy",
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+        "-an",
         str(dest)
-    ], capture_output=True, text=True, timeout=300)
+    ], capture_output=True, text=True, timeout=600)
 
     if result.returncode != 0:
-        # Try with re-encode if copy fails
-        result = subprocess.run([
-            "ffmpeg", "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", str(concat_file),
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-crf", "30",
-            str(dest)
-        ], capture_output=True, text=True, timeout=300)
+        raise Exception(f"Concat failed: {result.stderr[-500:]}")
 
-    if result.returncode != 0:
-        raise Exception(f"Concat error: {result.stderr[-500:]}")
+    print(f"Final footage size: {dest.stat().st_size / 1024 / 1024:.1f}MB")
 
-    print(f"Concatenated footage size: {dest.stat().st_size}")
 
 def generate_srt(script: str, duration: float, srt_path: Path):
     import re
+    # Split into natural phrases/sentences
     sentences = re.split(r'(?<=[.!?])\s+', script.strip())
     sentences = [s.strip() for s in sentences if s.strip()]
     if not sentences:
         srt_path.write_text("")
         return
-    time_per_sentence = duration / len(sentences)
+
+    # Calculate words per second based on typical TTS speed
+    total_words = sum(len(s.split()) for s in sentences)
+    wps = total_words / duration  # words per second
+
     srt_content = ""
-    for i, sentence in enumerate(sentences):
-        start = i * time_per_sentence
-        end = (i + 1) * time_per_sentence
+    idx = 1
+    current_time = 0.0
+
+    for sentence in sentences:
         words = sentence.split()
-        chunks = [" ".join(words[j:j+8]) for j in range(0, len(words), 8)]
-        chunk_duration = (end - start) / len(chunks)
-        for k, chunk in enumerate(chunks):
-            idx = i * 100 + k + 1
-            cs = start + k * chunk_duration
-            ce = start + (k + 1) * chunk_duration
-            srt_content += f"{idx}\n{format_time(cs)} --> {format_time(ce)}\n{chunk}\n\n"
-    srt_path.write_text(srt_content)
+        # Split into chunks of max 6 words for readability
+        chunks = [" ".join(words[j:j+6]) for j in range(0, len(words), 6)]
+        for chunk in chunks:
+            chunk_words = len(chunk.split())
+            chunk_dur = chunk_words / wps
+            chunk_dur = max(0.8, min(chunk_dur, 4.0))  # clamp between 0.8s and 4s
+            end_time = current_time + chunk_dur
+            srt_content += f"{idx}\n{format_time(current_time)} --> {format_time(end_time)}\n{chunk}\n\n"
+            current_time = end_time
+            idx += 1
+
+    srt_path.write_text(srt_content, encoding="utf-8")
+
+
+def convert_srt_to_ass(srt_path: Path, ass_path: Path):
+    """Convert SRT to ASS with professional styling"""
+    result = subprocess.run([
+        "ffmpeg", "-y",
+        "-i", str(srt_path),
+        str(ass_path)
+    ], capture_output=True, text=True)
+
+    if result.returncode != 0 or not ass_path.exists():
+        # Fallback: manual ASS generation
+        ass_path.write_text(generate_ass_from_srt(srt_path))
+        return
+
+    # Override styles in the ASS file for professional look
+    content = ass_path.read_text(encoding="utf-8")
+
+    # Replace the Style line with our custom style
+    import re
+    style_line = (
+        "Style: Default,Arial,52,&H00FFFFFF,&H000000FF,&H00000000,&H99000000,"
+        "1,0,0,0,100,100,0,0,1,3,2,2,10,10,50,1"
+    )
+    content = re.sub(r"Style: Default.*", style_line, content)
+    ass_path.write_text(content, encoding="utf-8")
+
+
+def generate_ass_from_srt(srt_path: Path) -> str:
+    """Manual ASS generation as fallback"""
+    header = """[Script Info]
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,52,&H00FFFFFF,&H000000FF,&H00000000,&H99000000,1,0,0,0,100,100,0,0,1,3,2,2,10,10,80,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    events = ""
+    content = srt_path.read_text(encoding="utf-8")
+    import re
+    pattern = re.compile(r'(\d+)\n(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})\n(.+?)(?=\n\n|\Z)', re.DOTALL)
+    for m in pattern.finditer(content):
+        start = m.group(2).replace(",", ".").replace(":", "\\:")
+        end = m.group(3).replace(",", ".").replace(":", "\\:")
+        # Proper ASS time format: H:MM:SS.cs
+        def srt_time_to_ass(t):
+            t = t.replace("\\:", ":")
+            h, rest = t.split(":", 1)
+            m2, s = rest.rsplit(":", 1)
+            s, ms = s.split(".")
+            cs = int(ms) // 10
+            return f"{h}:{m2}:{s}.{cs:02d}"
+        start_ass = srt_time_to_ass(m.group(2).replace(",", "."))
+        end_ass = srt_time_to_ass(m.group(3).replace(",", "."))
+        text = m.group(4).strip().replace("\n", "\\N")
+        events += f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{text}\n"
+    return header + events
+
 
 def format_time(seconds: float) -> str:
     h = int(seconds // 3600)
@@ -251,31 +406,31 @@ def format_time(seconds: float) -> str:
     ms = int((seconds % 1) * 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
-def render_ffmpeg(video_path, audio_path, srt_path, output_path, duration, orientation):
-    if orientation == "landscape":
-        width, height = 1920, 1080
-    else:
-        width, height = 1080, 1920
+
+def render_ffmpeg(video_path, audio_path, ass_path, output_path, duration, orientation):
+    width, height = 1920, 1080  # Full HD
 
     if not video_path.exists() or video_path.stat().st_size < 1000:
         raise Exception(f"Video file missing or too small: {video_path}")
     if not audio_path.exists() or audio_path.stat().st_size < 1000:
         raise Exception(f"Audio file missing or too small: {audio_path}")
 
-    print(f"Video size: {video_path.stat().st_size}, Audio size: {audio_path.stat().st_size}")
+    print(f"Video: {video_path.stat().st_size/1024/1024:.1f}MB | Audio: {audio_path.stat().st_size/1024/1024:.1f}MB")
 
-    probe = subprocess.run([
-        "ffprobe", "-v", "error", "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1", str(video_path)
-    ], capture_output=True, text=True)
-    print(f"Video probe: {probe.stdout.strip()} err: {probe.stderr[:200]}")
+    # Build subtitle filter
+    has_subs = ass_path.exists() and ass_path.stat().st_size > 100
+    if has_subs:
+        vf = (
+            f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+            f"crop={width}:{height},setsar=1,"
+            f"ass={ass_path}"
+        )
+    else:
+        vf = (
+            f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+            f"crop={width}:{height},setsar=1"
+        )
 
-    subtitle_style = (
-        "FontName=Arial,FontSize=18,PrimaryColour=&H00FFFFFF,"
-        "OutlineColour=&H00000000,Outline=2,Alignment=2,MarginV=60"
-    )
-    # Use 720p to reduce memory usage on Railway
-    width, height = 1280, 720
     cmd = [
         "ffmpeg", "-y",
         "-stream_loop", "-1",
@@ -283,26 +438,27 @@ def render_ffmpeg(video_path, audio_path, srt_path, output_path, duration, orien
         "-i", str(video_path),
         "-t", str(duration),
         "-i", str(audio_path),
-        "-vf", f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setsar=1",
+        "-vf", vf,
         "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-tune", "fastdecode",
-        "-crf", "30",
-        "-threads", "1",
+        "-preset", "medium",
+        "-crf", "20",
+        "-threads", "2",
         "-c:a", "aac",
-        "-b:a", "128k",
-        "-movflags", "frag_keyframe+empty_moov",
+        "-b:a", "192k",
+        "-movflags", "+faststart",
         "-f", "mp4",
         str(output_path)
     ]
-    print(f"Running FFmpeg to: {output_path}")
-    print(f"Output dir exists: {output_path.parent.exists()}, writable: {os.access(output_path.parent, os.W_OK)}")
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    print(f"FFmpeg returncode: {result.returncode}")
-    print(f"FFmpeg stdout: {result.stdout[-300:]}")
-    print(f"FFmpeg stderr last: {result.stderr[-300:]}")
+
+    print(f"Rendering {duration:.1f}s at {width}x{height}...")
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+
+    print(f"FFmpeg exit: {result.returncode}")
     if result.returncode != 0:
+        print(f"FFmpeg stderr: {result.stderr[-1000:]}")
         raise Exception(f"FFmpeg error: {result.stderr[-800:]}")
+
     if not output_path.exists():
-        raise Exception(f"Output file not created at {output_path}")
-    print(f"Output file size: {output_path.stat().st_size}")
+        raise Exception(f"Output file not created: {output_path}")
+
+    print(f"Output: {output_path.stat().st_size/1024/1024:.1f}MB")
