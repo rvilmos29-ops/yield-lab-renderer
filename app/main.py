@@ -408,7 +408,7 @@ def format_time(seconds: float) -> str:
 
 
 def render_ffmpeg(video_path, audio_path, ass_path, output_path, duration, orientation):
-    width, height = 1920, 1080  # Full HD
+    width, height = 1280, 720  # 720p - faster render, still good for YouTube
 
     if not video_path.exists() or video_path.stat().st_size < 1000:
         raise Exception(f"Video file missing or too small: {video_path}")
@@ -440,8 +440,8 @@ def render_ffmpeg(video_path, audio_path, ass_path, output_path, duration, orien
         "-i", str(audio_path),
         "-vf", vf,
         "-c:v", "libx264",
-        "-preset", "medium",
-        "-crf", "20",
+        "-preset", "ultrafast",
+        "-crf", "26",
         "-threads", "2",
         "-c:a", "aac",
         "-b:a", "192k",
@@ -451,7 +451,7 @@ def render_ffmpeg(video_path, audio_path, ass_path, output_path, duration, orien
     ]
 
     print(f"Rendering {duration:.1f}s at {width}x{height}...")
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
 
     print(f"FFmpeg exit: {result.returncode}")
     if result.returncode != 0:
