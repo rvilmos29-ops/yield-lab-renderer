@@ -359,8 +359,8 @@ def convert_srt_to_ass(srt_path: Path, ass_path: Path):
     # Replace the Style line with our custom style
     import re
     style_line = (
-        "Style: Default,Arial,52,&H00FFFFFF,&H000000FF,&H00000000,&H99000000,"
-        "1,0,0,0,100,100,0,0,1,3,2,2,10,10,50,1"
+        "Style: Default,Arial,28,&H00FFFFFF,&H000000FF,&H00000000,&H99000000,"
+        "1,0,0,0,100,100,0,0,0,0,0,0,100,100,0,0,1,2,2,2,10,10,20,1"
     )
     content = re.sub(r"Style: Default.*", style_line, content)
     ass_path.write_text(content, encoding="utf-8")
@@ -376,7 +376,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,52,&H00FFFFFF,&H000000FF,&H00000000,&H99000000,1,0,0,0,100,100,0,0,1,3,2,2,10,10,80,1
+Style: Default,Arial,28,&H00FFFFFF,&H000000FF,&H00000000,&H99000000,1,0,0,0,100,100,0,0,1,3,2,2,10,10,80,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
