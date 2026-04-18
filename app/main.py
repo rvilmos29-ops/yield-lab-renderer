@@ -84,11 +84,15 @@ async def process_render(job_id: str, req: RenderRequest):
         render_ffmpeg(video_path, audio_path, ass_path, output_path, duration, req.orientation)
 
         print(f"[{job_id}] Uploading to Cloudinary...")
-        result = cloudinary.uploader.upload(
+        file_size_mb = output_path.stat().st_size / 1024 / 1024
+        print(f"[{job_id}] File size: {file_size_mb:.1f}MB")
+        # Use chunk upload for large files (Cloudinary free tier nginx limit ~100MB)
+        result = cloudinary.uploader.upload_large(
             str(output_path),
             resource_type="video",
             public_id=f"yield-lab/{job_id}",
-            folder="yield-lab"
+            folder="yield-lab",
+            chunk_size=50 * 1024 * 1024  # 50MB chunks
         )
         jobs[job_id]["status"] = "done"
         jobs[job_id]["video_url"] = result["secure_url"]
@@ -441,7 +445,7 @@ def render_ffmpeg(video_path, audio_path, ass_path, output_path, duration, orien
         "-vf", vf,
         "-c:v", "libx264",
         "-preset", "ultrafast",
-        "-crf", "26",
+        "-crf", "32",
         "-threads", "2",
         "-c:a", "aac",
         "-b:a", "192k",
